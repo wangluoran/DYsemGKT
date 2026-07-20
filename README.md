@@ -70,12 +70,18 @@ KT/
 
 ## 环境安装
 
-项目使用 [uv](https://docs.astral.sh/uv/) 管理 Python、虚拟环境和锁定依赖。仓库通过 `.python-version` 固定使用 Python 3.11，通过 `uv.lock` 固定完整依赖版本，并在 `pyproject.toml` 中配置清华 PyPI 镜像以提高国内安装速度。
+项目使用 [uv](https://docs.astral.sh/uv/) 管理 Python、虚拟环境和锁定依赖。仓库通过 `.python-version` 默认使用 Python 3.13，通过 `uv.lock` 固定完整依赖版本，并在 `pyproject.toml` 中配置清华 PyPI 镜像以提高国内安装速度。项目兼容 Python 3.11 至 3.13。
 
 克隆仓库后，在仓库根目录安装锁定的核心依赖和开发依赖：
 
 ```console
 uv sync --frozen
+```
+
+如果本机已经安装 Python 3.13，并希望禁止 uv 下载 Python，可使用：
+
+```console
+uv sync --frozen --python 3.13 --no-python-downloads
 ```
 
 运行测试：
