@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     fit.add_argument("--output-dir", type=Path, required=True)
     fit.add_argument("--split", choices=["temporal", "cold"], default="temporal")
     fit.add_argument("--feature-mode", choices=["semantic", "id", "hybrid"], default="hybrid")
-    fit.add_argument("--hidden-dim", type=int, default=128)
+    fit.add_argument("--hidden-dim", type=int, default=256)
     fit.add_argument("--num-heads", type=int, default=4)
     fit.add_argument("--num-layers", type=int, default=2)
     fit.add_argument("--history-length", type=int, default=50)

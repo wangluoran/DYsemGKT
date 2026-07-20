@@ -21,7 +21,7 @@ class TrainConfig:
     seed: int = 42
     split: str = "temporal"
     feature_mode: str = "hybrid"
-    hidden_dim: int = 128
+    hidden_dim: int = 256
     num_heads: int = 4
     num_layers: int = 2
     history_length: int = 50

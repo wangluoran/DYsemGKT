@@ -114,6 +114,32 @@ data/raw/moocradar/
 
 所有后续命令均从仓库根目录运行，不依赖任何用户或操作系统的绝对路径。
 
+## 完整运行流程
+
+以下命令覆盖环境安装、测试、正式 embedding 生成、数据检查和模型训练。第一次执行 BGE-M3 预处理时会下载模型，后续运行复用本地缓存。
+
+```console
+# 1. 安装锁定依赖，包括 SentenceTransformer
+uv sync --frozen --extra semantic
+
+# 2. 运行项目测试
+uv run --frozen pytest
+
+# 3. 生成正式题目 embedding 和处理后交互数据
+uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name BAAI/bge-m3 --batch-size 32 --device cuda
+
+# 4. 检查处理结果
+uv run --frozen dysemkt inspect --data-dir data/processed/moocradar_bge
+
+# 5. 普通时间划分训练
+uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/hybrid_temporal --split temporal --feature-mode hybrid
+
+# 6. 严格未见题目冷启动训练
+uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/semantic_cold --split cold --feature-mode semantic
+```
+
+没有 CUDA 时，删除预处理命令末尾的 `--device cuda`，模型训练会自动回退到 CPU。BGE-M3 在 CPU 上能够运行，但速度会明显更慢。
+
 ### 1. 离线流程验证
 
 哈希编码器不需要下载模型，适合验证数据处理和训练流程：
@@ -124,13 +150,84 @@ uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir dat
 
 哈希编码器只是确定性的字符 n-gram 特征，不能用于支持正式的题目语义研究结论。
 
-### 2. 正式语义实验
+### 2. 正式语义实验：自动下载模型后本地计算
 
 使用多语言 SentenceTransformer，例如 BGE-M3：
 
 ```console
 uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name BAAI/bge-m3 --batch-size 32
 ```
+
+这里的 `BAAI/bge-m3` 是 Hugging Face 模型标识，不是远程 embedding API。执行过程如下：
+
+```text
+题干、选项、概念
+        |
+首次运行时下载 BAAI/bge-m3 到 Hugging Face 本地缓存
+        |
+SentenceTransformer 在本机 CPU/GPU 上批量推理
+        |
+生成 question_features.npy
+        |
+训练阶段直接读取该文件，不再加载或调用文本模型
+```
+
+可以通过 `--device cuda` 指定 GPU 编码：
+
+```console
+uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name BAAI/bge-m3 --batch-size 32 --device cuda
+```
+
+### 3. 使用本地模型目录
+
+如果已经下载并固定了 SentenceTransformer 模型快照，可以放入被 Git 忽略的 `data/models/`：
+
+```text
+data/models/bge-m3/
+|-- config.json
+|-- modules.json
+|-- model.safetensors
+`-- ...
+```
+
+将本地目录直接传给 `--model-name`：
+
+```console
+uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name data/models/bge-m3 --batch-size 32 --device cuda
+```
+
+本地目录模式不会通过 embedding API 发送题目数据。为了严格复现实验，建议记录模型仓库、具体 revision 或 commit，并保留处理目录中的 `metadata.json`。
+
+### 4. API embedding 支持边界
+
+当前版本不支持 OpenAI、SiliconFlow 或其他远程 embedding API。正式编码只有 SentenceTransformer 本地推理路径，原因是：
+
+- 题目文本不会离开本机；
+- 不依赖 API Key、配额或服务可用性；
+- 批量实验成本和结果版本更容易控制；
+- 生成一次 embedding 后，所有 KT 消融实验复用同一特征文件。
+
+代码中的 `TextEncoder` 是可扩展接口，后续可以增加 API 实现，但在实现请求重试、批次恢复、响应维度校验、模型版本记录和本地缓存前，不应把 API 路径用于正式实验。
+
+### 5. Embedding 如何进入模型
+
+embedding 只在预处理阶段生成一次，数据流为：
+
+```text
+TextEncoder.encode(题目文本列表)
+        |
+question_features.npy，形状为 (题目数, 文本向量维度)
+        |
+ProcessedData.question_features
+        |
+DySemKT(question_features=...)
+        |
+冻结原始文本向量 + 可训练线性投影
+        |
+256 维题目语义表示
+```
+
+原始 embedding 在 KT 训练阶段注册为固定 buffer，不被梯度更新；可训练的是从原始文本维度到模型隐藏维度的投影层。这样不同 KT 消融实验使用完全相同的基础文本特征。
 
 题目编码文本包括：
 
@@ -194,7 +291,7 @@ uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-d
 
 | 参数 | 默认值 |
 |---|---:|
-| 隐藏维度 | 128 |
+| 隐藏维度 | 256 |
 | 学生侧 Transformer 层数 | 2 |
 | 题目侧 Transformer 层数 | 1 |
 | 注意力头数 | 4 |

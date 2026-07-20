@@ -89,7 +89,7 @@ $$
 e_q^{sem}=\operatorname{GELU}\left(\operatorname{LayerNorm}(W_s s_q+b_s)\right)
 $$
 
-默认 `d=128`。
+默认 `d=256`。
 
 ## 4. 三种题目表示模式
 
@@ -212,7 +212,7 @@ $$
 
 - 2 层 Pre-LN Transformer；
 - 4 个注意力头；
-- 隐藏维度 128；
+- 隐藏维度 256；
 - FFN 维度 512；
 - GELU 激活；
 - 最大历史长度 50。
@@ -326,7 +326,7 @@ $$
 
 ```text
 D_text = 1024  # BGE-M3
-d      = 128
+d      = 256
 L      = 50
 ```
 

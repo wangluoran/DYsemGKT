@@ -44,7 +44,7 @@ class DySemKT(nn.Module):
     def __init__(
         self,
         question_features: torch.Tensor,
-        hidden_dim: int = 128,
+        hidden_dim: int = 256,
         num_heads: int = 4,
         num_layers: int = 2,
         dropout: float = 0.1,
