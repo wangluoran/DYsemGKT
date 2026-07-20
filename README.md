@@ -108,6 +108,8 @@ uv sync --frozen --extra semantic
 
 ## 数据预处理
 
+下载链接：https://bhpan.buaa.edu.cn/anyshare/zh-cn/link/AAE5A458AFE444474EBEC928F98986E5B8?_tb=none&expires_at=2030-10-31T23%3A59%3A46%2B08%3A00&item_type=folder&password_required=false&title=MOOCRadar&type=anonymous
+
 下载 MOOCRadar 后，将四个原始文件放入以下仓库相对目录：
 
 ```text
