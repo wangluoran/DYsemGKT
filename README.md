@@ -60,25 +60,34 @@ KT/
 |   |-- preprocess.py
 |   `-- text.py
 |-- tests/
+|-- .python-version
 |-- pyproject.toml
+|-- uv.lock
 `-- README.md
 ```
 
-原始数据保持只读。派生数据默认写入 `data/processed/`，实验输出默认写入 `outputs/`，这两个目录不会提交到 Git。
+原始数据保持只读并默认放在 `data/raw/`。派生数据写入 `data/processed/`，实验输出写入 `outputs/`。这些目录均不会提交到 Git。
 
 ## 环境安装
 
-建议使用 Python 3.10 或更高版本。
+项目使用 [uv](https://docs.astral.sh/uv/) 管理 Python、虚拟环境和锁定依赖。仓库通过 `.python-version` 固定使用 Python 3.11，通过 `uv.lock` 固定完整依赖版本，并在 `pyproject.toml` 中配置清华 PyPI 镜像以提高国内安装速度。
 
-```powershell
-cd C:\Users\15515\Desktop\DyGKT\KT
-python -m pip install -e ".[dev,semantic]"
+克隆仓库后，在仓库根目录安装锁定的核心依赖和开发依赖：
+
+```console
+uv sync --frozen
 ```
 
-安装完成后运行测试：
+运行测试：
 
-```powershell
-pytest
+```console
+uv run --frozen pytest
+```
+
+正式语义实验还需要安装 `semantic` 可选依赖：
+
+```console
+uv sync --frozen --extra semantic
 ```
 
 当前项目测试包括：
@@ -93,16 +102,24 @@ pytest
 
 ## 数据预处理
 
+下载 MOOCRadar 后，将四个原始文件放入以下仓库相对目录：
+
+```text
+data/raw/moocradar/
+|-- problem.json
+|-- student-problem-coarse.json
+|-- student-problem-middle.json
+`-- student-problem-fine.json
+```
+
+所有后续命令均从仓库根目录运行，不依赖任何用户或操作系统的绝对路径。
+
 ### 1. 离线流程验证
 
 哈希编码器不需要下载模型，适合验证数据处理和训练流程：
 
-```powershell
-dysemkt preprocess `
-  --raw-dir C:\Users\15515\Desktop\KT\MOOCRadar\MOOCRadar `
-  --output-dir data\processed\moocradar_hash `
-  --encoder hash `
-  --embedding-dim 256
+```console
+uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_hash --encoder hash --embedding-dim 256
 ```
 
 哈希编码器只是确定性的字符 n-gram 特征，不能用于支持正式的题目语义研究结论。
@@ -111,13 +128,8 @@ dysemkt preprocess `
 
 使用多语言 SentenceTransformer，例如 BGE-M3：
 
-```powershell
-dysemkt preprocess `
-  --raw-dir C:\Users\15515\Desktop\KT\MOOCRadar\MOOCRadar `
-  --output-dir data\processed\moocradar_bge `
-  --encoder sentence-transformer `
-  --model-name BAAI/bge-m3 `
-  --batch-size 32
+```console
+uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name BAAI/bge-m3 --batch-size 32
 ```
 
 题目编码文本包括：
@@ -131,8 +143,8 @@ dysemkt preprocess `
 
 ## 检查处理结果
 
-```powershell
-dysemkt inspect --data-dir data\processed\moocradar_bge
+```console
+uv run --frozen dysemkt inspect --data-dir data/processed/moocradar_bge
 ```
 
 处理目录包含：
@@ -154,40 +166,28 @@ metadata.json
 
 默认使用语义与题目 ID 的混合表示：
 
-```powershell
-dysemkt train `
-  --data-dir data\processed\moocradar_bge `
-  --output-dir outputs\hybrid_temporal `
-  --split temporal `
-  --feature-mode hybrid
+```console
+uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/hybrid_temporal --split temporal --feature-mode hybrid
 ```
 
 ### 严格未见题目冷启动
 
 冷启动实验主要使用纯语义模式，避免未训练的题目 ID embedding 干扰结果：
 
-```powershell
-dysemkt train `
-  --data-dir data\processed\moocradar_bge `
-  --output-dir outputs\semantic_cold `
-  --split cold `
-  --feature-mode semantic
+```console
+uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/semantic_cold --split cold --feature-mode semantic
 ```
 
 ### ID 对照实验
 
-```powershell
-dysemkt train `
-  --data-dir data\processed\moocradar_bge `
-  --output-dir outputs\id_temporal `
-  --split temporal `
-  --feature-mode id
+```console
+uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/id_temporal --split temporal --feature-mode id
 ```
 
 训练默认自动使用可用的 CUDA 设备，否则使用 CPU。可显式指定：
 
-```powershell
-dysemkt train --data-dir data\processed\moocradar_bge --output-dir outputs\run --device cuda
+```console
+uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/run --device cuda
 ```
 
 ## 默认训练参数
