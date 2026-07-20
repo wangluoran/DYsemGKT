@@ -38,13 +38,18 @@ problem.json (JSONL)                  student-problem-fine.json
 For event `(student, question, time)`:
 
 1. The student encoder consumes previous `(question semantic, response,
-   elapsed time)` interactions.
+   elapsed time)` interactions together with explicit same-question,
+   same-exercise and concept-overlap relations to the current question.
 2. The question encoder consumes previous `(response, elapsed time)` events,
    representing population-level temporal behavior without student identity.
 3. The current question combines frozen text features and an optional learned
    item ID embedding.
 4. A learned gate fuses student state, dynamic question state and current
    semantics before binary prediction.
+
+The student state also receives a repeat summary containing repeat count, the
+last same-question result and time since that attempt. All repeat features are
+computed from strictly prior, allowed history.
 
 No current response or future event is visible to either encoder.
 
@@ -68,4 +73,3 @@ MOOCRadar is label-imbalanced, accuracy is never reported alone.
 4. Temporal and unseen-question ablations across seeds.
 5. Optional extensions: concept graph encoder, learned text fine-tuning and
    richer question-side student-state aggregation.
-

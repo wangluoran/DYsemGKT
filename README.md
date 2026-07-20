@@ -11,6 +11,7 @@ DySemKT 是一个面向知识追踪研究的精简项目，用于探索如何通
 - 支持离线哈希文本特征和 SentenceTransformer 预训练语义特征；
 - 提供全局时间划分和严格未见题目冷启动划分；
 - 实现 DySemKT：学生历史编码器、题目历史编码器和语义门控融合；
+- 显式建模同题重复、同练习单元、概念重叠、上次同题结果和重复间隔；
 - 提供 `semantic`、`id`、`hybrid` 三种题目表示模式用于消融实验；
 - 包含训练、验证、测试、早停、检查点和指标输出流程；
 - 包含数据处理、历史边界、模型反向传播和端到端训练测试。
@@ -140,6 +141,7 @@ dysemkt inspect --data-dir data\processed\moocradar_bge
 events.npz
 question_features.npy
 question_text.jsonl
+question_context.json
 mappings.json
 metadata.json
 ```
@@ -242,6 +244,7 @@ allowed_history = train_mask
 - 文本输入不包含标准答案；
 - 当前标签不参与当前事件编码；
 - 当前事件只能访问索引更小的历史事件；
+- 同题重复次数、上次结果和重复间隔只从允许历史计算；
 - 不使用基于全数据标签计算的难度或区分度；
 - 冷启动划分中的题目集合在训练、验证和测试之间严格互斥。
 

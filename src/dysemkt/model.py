@@ -61,6 +61,10 @@ class DySemKT(nn.Module):
         self.item_id = nn.Embedding(features.shape[0], hidden_dim)
         self.response = nn.Embedding(2, hidden_dim)
         self.time = TimeProjection(hidden_dim)
+        self.structure = nn.Linear(3, hidden_dim, bias=False)
+        self.repeat_summary = nn.Sequential(
+            nn.Linear(4, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim),
+        )
         self.student_encoder = HistoryEncoder(hidden_dim, num_heads, num_layers, dropout, max_history)
         self.question_encoder = HistoryEncoder(hidden_dim, num_heads, max(1, num_layers // 2), dropout, max_history)
         self.gate = nn.Sequential(nn.Linear(hidden_dim * 3, hidden_dim), nn.Sigmoid())
@@ -81,9 +85,22 @@ class DySemKT(nn.Module):
     def forward(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         current = self.question_embedding(batch["item"])
         history_questions = self.question_embedding(batch["student_item"])
-        student_sequence = history_questions + self.response(batch["student_response"]) + self.time(batch["student_delta"])
+        structure_features = torch.stack([
+            batch["same_question"], batch["same_exercise"], batch["concept_overlap"],
+        ], dim=-1)
+        student_sequence = (
+            history_questions + self.response(batch["student_response"])
+            + self.time(batch["student_delta"]) + self.structure(structure_features)
+        )
         question_sequence = self.response(batch["question_response"]) + self.time(batch["question_delta"])
-        student_state = self.student_encoder(student_sequence, batch["student_mask"])
+        repeat_features = torch.stack([
+            batch["has_repeat"],
+            torch.log1p(batch["repeat_count"]) / 4.0,
+            batch["last_same_correct"],
+            torch.log1p(batch["last_same_delta"].clamp_min(0)) / 16.0,
+        ], dim=-1)
+        student_state = self.student_encoder(student_sequence, batch["student_mask"], current)
+        student_state = student_state + self.repeat_summary(repeat_features)
         question_state = self.question_encoder(question_sequence, batch["question_mask"], current)
         gate = self.gate(torch.cat([student_state, question_state, current], dim=-1))
         dynamic = gate * student_state + (1.0 - gate) * question_state

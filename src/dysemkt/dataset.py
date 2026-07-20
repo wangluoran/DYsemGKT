@@ -18,11 +18,27 @@ class ProcessedData:
                 setattr(self, name, values[name])
         self.question_features = np.load(self.directory / "question_features.npy").astype(np.float32)
         self.metadata = read_json(self.directory / "metadata.json")
+        self.mappings = read_json(self.directory / "mappings.json")
+        self.question_context = read_json(self.directory / "question_context.json")
         size = len(self.user)
         if any(len(getattr(self, name)) != size for name in ("item", "timestamp", "label", "temporal_split", "cold_split")):
             raise ValueError("event arrays have inconsistent lengths")
         if np.any(np.diff(self.timestamp) < 0):
             raise ValueError("events must be globally chronological")
+        if len(self.question_context) != len(self.question_features):
+            raise ValueError("question context and feature rows are not aligned")
+        if [row["problem_id"] for row in self.question_context] != self.mappings["items"]:
+            raise ValueError("question context does not follow the dense item mapping")
+        exercise_values = sorted({str(row.get("exercise_id") or "") for row in self.question_context})
+        exercise_to_idx = {value: idx for idx, value in enumerate(exercise_values) if value}
+        self.item_exercise = np.asarray([
+            exercise_to_idx.get(str(row.get("exercise_id") or ""), -1)
+            for row in self.question_context
+        ], dtype=np.int64)
+        self.item_concepts = [
+            frozenset(str(value) for value in (row.get("concepts") or []) if str(value).strip())
+            for row in self.question_context
+        ]
 
 
 class TemporalHistoryDataset(Dataset):
@@ -81,12 +97,52 @@ class TemporalHistoryDataset(Dataset):
             result["item"] = torch.from_numpy(items)
         return result
 
+    def _student_structure(self, events: list[int], current_item: int, current_time: int) -> dict[str, torch.Tensor]:
+        length = self.history_length
+        same_question = np.zeros(length, dtype=np.float32)
+        same_exercise = np.zeros(length, dtype=np.float32)
+        concept_overlap = np.zeros(length, dtype=np.float32)
+        if events:
+            start = length - len(events)
+            history_items = self.data.item[np.asarray(events, dtype=np.int64)]
+            same_question[start:] = history_items == current_item
+            current_exercise = int(self.data.item_exercise[current_item])
+            if current_exercise >= 0:
+                same_exercise[start:] = self.data.item_exercise[history_items] == current_exercise
+            current_concepts = self.data.item_concepts[current_item]
+            for offset, history_item in enumerate(history_items, start=start):
+                history_concepts = self.data.item_concepts[int(history_item)]
+                union = current_concepts | history_concepts
+                concept_overlap[offset] = len(current_concepts & history_concepts) / len(union) if union else 0.0
+
+        repeated_positions = np.flatnonzero(same_question)
+        has_repeat = float(len(repeated_positions) > 0)
+        repeat_count = float(len(repeated_positions))
+        last_correct = 0.0
+        last_delta = 0.0
+        if repeated_positions.size:
+            history_position = int(repeated_positions[-1] - (length - len(events)))
+            last_event = events[history_position]
+            last_correct = float(self.data.label[last_event])
+            last_delta = float(max(0, current_time - int(self.data.timestamp[last_event])))
+        return {
+            "same_question": torch.from_numpy(same_question),
+            "same_exercise": torch.from_numpy(same_exercise),
+            "concept_overlap": torch.from_numpy(concept_overlap),
+            "has_repeat": torch.tensor(has_repeat, dtype=torch.float32),
+            "repeat_count": torch.tensor(repeat_count, dtype=torch.float32),
+            "last_same_correct": torch.tensor(last_correct, dtype=torch.float32),
+            "last_same_delta": torch.tensor(last_delta, dtype=torch.float32),
+        }
+
     def __getitem__(self, position: int) -> dict[str, torch.Tensor]:
         event = int(self.indices[position])
         user = int(self.data.user[event])
         item = int(self.data.item[event])
         current_time = int(self.data.timestamp[event])
-        student = self._padded(self._history(self.user_events, user, event), current_time, True)
+        student_events = self._history(self.user_events, user, event)
+        student = self._padded(student_events, current_time, True)
+        structure = self._student_structure(student_events, item, current_time)
         question = self._padded(self._history(self.item_events, item, event), current_time, False)
         return {
             "event": torch.tensor(event),
@@ -96,8 +152,14 @@ class TemporalHistoryDataset(Dataset):
             "student_response": student["response"],
             "student_delta": student["delta"],
             "student_mask": student["mask"],
+            "same_question": structure["same_question"],
+            "same_exercise": structure["same_exercise"],
+            "concept_overlap": structure["concept_overlap"],
+            "has_repeat": structure["has_repeat"],
+            "repeat_count": structure["repeat_count"],
+            "last_same_correct": structure["last_same_correct"],
+            "last_same_delta": structure["last_same_delta"],
             "question_response": question["response"],
             "question_delta": question["delta"],
             "question_mask": question["mask"],
         }
-

@@ -16,7 +16,12 @@ def test_preprocess_builds_answer_free_chronological_contract(raw_moocradar, tmp
     assert metadata["num_users"] == 6
     assert metadata["num_items"] == 8
     assert metadata["semantic_dim"] == 32
+    assert metadata["format_version"] == 2
     assert metadata["rejected_questions"][0]["problem_id"] == "P_bad"
+    context = json.loads((output / "question_context.json").read_text(encoding="utf-8"))
+    assert len(context) == 8
+    assert context[0]["exercise_id"] == "E_0"
+    assert context[0]["concepts"] == ["概念0"]
 
     with np.load(output / "events.npz") as events:
         assert np.all(np.diff(events["timestamp"]) >= 0)
@@ -41,4 +46,3 @@ def test_hash_encoder_is_deterministic_and_normalized():
     second = encoder.encode(["相同文本", "不同文本"])
     np.testing.assert_array_equal(first, second)
     np.testing.assert_allclose(np.linalg.norm(first, axis=1), 1.0, atol=1e-6)
-

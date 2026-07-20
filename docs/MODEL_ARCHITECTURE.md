@@ -153,30 +153,59 @@ $$
 H_u(t)=\{(q_1,r_1,t_1),\ldots,(q_L,r_L,t_L)\}
 $$
 
+对历史题目与当前题目计算三种显式结构关系：
+
+$$
+c_k=[I(q_k=q),\ I(exercise_k=exercise_q),\ J(concepts_k,concepts_q)]
+$$
+
+其中，$I(\cdot)$ 是 0/1 指示函数，$J(\cdot)$ 是两个概念集合的 Jaccard 重叠率：
+
+$$
+J(A,B)=\frac{|A\cap B|}{|A\cup B|}
+$$
+
+因此，精确重复同一道题、同练习单元下的不同题，以及概念相似题不会被混为同一种关系。
+
 每条学生历史交互表示为：
 
 $$
-x_k^{student}=e_{q_k}+e_{r_k}+e_{\Delta t_k}
+x_k^{student}=e_{q_k}+e_{r_k}+e_{\Delta t_k}+W_c c_k
 $$
 
 其中：
 
 - `e_qk`：历史题目的语义、ID 或混合表示；
 - `e_rk`：答对/答错 embedding；
-- `e_delta`：时间差表示。
+- `e_delta`：时间差表示；
+- `c_k`：同题、同练习单元和概念重叠结构特征。
 
-在历史序列前加入可学习状态 token，并添加位置编码：
+模型还汇总当前学生对同一道题的重复行为：
+
+$$
+v_{repeat}=[I(repeated),\ \log(1+count),\ last\_correct,\ \log(1+last\_delta)]
+$$
+
+它包含是否做过、历史重复次数、上次是否答对和距上次同题作答的时间。
+
+学生编码器的状态 token 同时注入当前题目表示，使历史注意力以当前题目为条件：
+
+$$
+STATE_u^{(0)}=learned\_token+e_q
+$$
+
+随后添加位置编码并送入 Transformer：
 
 $$
 Z_u=\operatorname{Transformer}_u\left(
-[STATE_u,x_1^{student},\ldots,x_L^{student}]+P
+[STATE_u^{(0)},x_1^{student},\ldots,x_L^{student}]+P
 \right)
 $$
 
-取第一个 token 的输出作为当前学生状态：
+取第一个 token 的输出，并加入重复行为摘要：
 
 $$
-h_u=Z_u[:,0]
+h_u=Z_u[:,0]+\operatorname{MLP}_{repeat}(v_{repeat})
 $$
 
 默认学生编码器配置：
@@ -284,6 +313,8 @@ $$
 | 当前题目表示 | `(B, d)` |
 | 学生历史题目 | `(B, L, d)` |
 | 学生历史序列 | `(B, L, d)` |
+| 同题/同练习/概念重叠 | `(B, L, 3)` |
+| 重复行为摘要 | `(B, 4)` |
 | 题目历史序列 | `(B, L, d)` |
 | 学生状态 | `(B, d)` |
 | 题目状态 | `(B, d)` |
@@ -308,7 +339,7 @@ student_id -> 历史事件索引
 question_id -> 历史事件索引
 ```
 
-针对当前事件 `i`，通过二分查找只返回索引 `j < i` 的历史事件。
+针对当前事件 `i`，通过二分查找只返回索引 `j < i` 的历史事件。同题重复次数、上次同题结果和重复间隔也只从这些允许历史中计算。
 
 训练与评估默认进一步设置：
 

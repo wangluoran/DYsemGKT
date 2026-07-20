@@ -6,6 +6,7 @@ Each processed dataset directory contains:
 events.npz
 question_features.npy
 question_text.jsonl
+question_context.json
 mappings.json
 metadata.json
 ```
@@ -25,8 +26,12 @@ metadata.json
 Rows align with the dense item mapping. `question_text.jsonl` contains the exact
 answer-free text passed to the encoder for auditability.
 
+`question_context.json` follows the same dense item order and stores each
+question's `course_id`, `exercise_id`, concepts, knowledge type and cognitive
+dimension. These fields support explicit same-question, same-exercise and
+concept-overlap features without parsing text during training.
+
 Split statistics and source SHA-256 fingerprints are recorded in
 `metadata.json`. Difficulty and discrimination are deliberately absent from
 the base contract; if added later they must be estimated from training labels
 only and saved as split-specific features.
-

@@ -191,9 +191,20 @@ def preprocess_moocradar(
     with (output_dir / "question_text.jsonl").open("w", encoding="utf-8") as handle:
         for problem_id, text in zip(items, texts):
             handle.write(json.dumps({"problem_id": problem_id, "text": text}, ensure_ascii=False) + "\n")
+    write_json(output_dir / "question_context.json", [
+        {
+            "problem_id": problem_id,
+            "course_id": questions[problem_id].course_id,
+            "exercise_id": questions[problem_id].exercise_id,
+            "concepts": list(questions[problem_id].concepts),
+            "knowledge_type": questions[problem_id].knowledge_type,
+            "cognitive_dimension": questions[problem_id].cognitive_dimension,
+        }
+        for problem_id in items
+    ])
     write_json(output_dir / "mappings.json", {"users": users, "items": items})
     metadata = {
-        "format_version": 1,
+        "format_version": 2,
         "source": "MOOCRadar",
         "interaction_file": interaction_file,
         "source_sha256": {"problem": sha256_file(problem_path), "interactions": sha256_file(interaction_path)},
