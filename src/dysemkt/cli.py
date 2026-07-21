@@ -7,7 +7,7 @@ from pathlib import Path
 from .dataset import ProcessedData
 from .engine import TrainConfig, train
 from .preprocess import preprocess_moocradar
-from .text import HashTextEncoder, SentenceTransformerTextEncoder
+from .text import APITextEncoder, HashTextEncoder, SentenceTransformerTextEncoder
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--raw-dir", type=Path, required=True)
     prep.add_argument("--output-dir", type=Path, required=True)
     prep.add_argument("--interaction-file", default="student-problem-fine.json")
-    prep.add_argument("--encoder", choices=["hash", "sentence-transformer"], default="hash")
+    prep.add_argument("--encoder", choices=["hash", "sentence-transformer", "api"], default="hash")
     prep.add_argument("--embedding-dim", type=int, default=256)
     prep.add_argument("--model-name", default="BAAI/bge-m3")
     prep.add_argument("--batch-size", type=int, default=32)
@@ -53,11 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.command == "preprocess":
-        encoder = (
-            HashTextEncoder(args.embedding_dim)
-            if args.encoder == "hash"
-            else SentenceTransformerTextEncoder(args.model_name, args.batch_size, args.device)
-        )
+        if args.encoder == "hash":
+            encoder = HashTextEncoder(args.embedding_dim)
+        elif args.encoder == "sentence-transformer":
+            encoder = SentenceTransformerTextEncoder(args.model_name, args.batch_size, args.device)
+        else:
+            encoder = APITextEncoder.from_env(batch_size=args.batch_size)
         result = preprocess_moocradar(
             args.raw_dir, args.output_dir, encoder, interaction_file=args.interaction_file,
             min_user_interactions=args.min_user_interactions, seed=args.seed,

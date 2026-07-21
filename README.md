@@ -8,7 +8,7 @@ DySemKT 是一个面向知识追踪研究的精简项目，用于探索如何通
 
 - 读取、校验并按时间重新排序 MOOCRadar JSON 数据；
 - 构建可审计且不包含标准答案的题目文本；
-- 支持离线哈希文本特征和 SentenceTransformer 预训练语义特征；
+- 支持离线哈希文本特征、SentenceTransformer 本地语义特征和 OpenAI 兼容 embeddings API；
 - 提供全局时间划分和严格未见题目冷启动划分；
 - 实现 DySemKT：学生历史编码器、题目历史编码器和语义门控融合；
 - 显式建模同题重复、同练习单元、概念重叠、上次同题结果和重复间隔；
@@ -206,16 +206,59 @@ uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar
 
 本地目录模式不会通过 embedding API 发送题目数据。为了严格复现实验，建议记录模型仓库、具体 revision 或 commit，并保留处理目录中的 `metadata.json`。
 
-### 4. API embedding 支持边界
+### 4. API embedding
 
-当前版本不支持 OpenAI、SiliconFlow 或其他远程 embedding API。正式编码只有 SentenceTransformer 本地推理路径，原因是：
+项目支持 OpenAI 兼容的 embeddings API。API 只在预处理阶段调用一次，生成 `question_features.npy` 后，后续 KT 训练不再访问远程服务。
 
-- 题目文本不会离开本机；
-- 不依赖 API Key、配额或服务可用性；
-- 批量实验成本和结果版本更容易控制；
-- 生成一次 embedding 后，所有 KT 消融实验复用同一特征文件。
+API 模型和服务配置写入仓库根目录的 `.env`。先复制 `.env.example`：
 
-代码中的 `TextEncoder` 是可扩展接口，后续可以增加 API 实现，但在实现请求重试、批次恢复、响应维度校验、模型版本记录和本地缓存前，不应把 API 路径用于正式实验。
+```powershell
+Copy-Item .env.example .env
+```
+
+OpenAI 示例：
+
+```dotenv
+DYSEMKT_API_MODEL=text-embedding-3-small
+DYSEMKT_API_BASE_URL=https://api.openai.com/v1
+DYSEMKT_API_KEY_ENV=OPENAI_API_KEY
+DYSEMKT_API_OUTPUT_DIM=256
+# 仅当服务商支持 OpenAI 的 dimensions 请求参数时才设置：
+# DYSEMKT_API_REQUEST_DIMENSIONS=256
+DYSEMKT_API_CACHE_DIR=data/processed/api_cache/openai
+DYSEMKT_API_TIMEOUT=60
+DYSEMKT_API_MAX_RETRIES=3
+OPENAI_API_KEY=sk-...
+```
+
+SiliconFlow 或其他 OpenAI 兼容服务示例：
+
+```dotenv
+DYSEMKT_API_MODEL=BAAI/bge-m3
+DYSEMKT_API_BASE_URL=https://api.siliconflow.cn/v1
+DYSEMKT_API_KEY_ENV=SILICONFLOW_API_KEY
+DYSEMKT_API_CACHE_DIR=data/processed/api_cache/siliconflow
+# 不要设置 DYSEMKT_API_REQUEST_DIMENSIONS，除非服务商文档明确支持。
+SILICONFLOW_API_KEY=...
+```
+
+运行预处理时，CLI 只选择 API 编码器，不传模型配置：
+
+```console
+uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_api --encoder api --batch-size 32
+```
+
+相关 `.env` 参数：
+
+- `DYSEMKT_API_MODEL`：embedding 模型名；
+- `DYSEMKT_API_BASE_URL`：OpenAI 兼容 API 根地址，默认 `https://api.openai.com/v1`；
+- `DYSEMKT_API_KEY_ENV`：读取 API Key 的环境变量名，默认 `OPENAI_API_KEY`；
+- `DYSEMKT_API_OUTPUT_DIM`：可选本地响应维度校验，不会发送给 API；
+- `DYSEMKT_API_REQUEST_DIMENSIONS`：可选请求参数，只有服务商支持 OpenAI `dimensions` 参数时才设置；
+- `DYSEMKT_API_CACHE_DIR`：逐题缓存 embedding，断点重跑时会复用已完成请求；
+- `DYSEMKT_API_TIMEOUT` 和 `DYSEMKT_API_MAX_RETRIES`：控制超时与 429、5xx 或网络失败后的重试。
+
+API 路径会把题目文本发送给外部服务，并依赖服务商的模型版本、网络、配额和计费。正式复现实验建议固定 `metadata.json`、保留 API 缓存，或优先使用本地 SentenceTransformer 快照。
 
 ### 5. Embedding 如何进入模型
 
