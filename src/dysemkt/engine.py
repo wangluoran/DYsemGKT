@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -47,6 +48,17 @@ def _to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str
     return {name: value.to(device) for name, value in batch.items()}
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
 @torch.no_grad()
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict[str, float]:
     model.eval()
@@ -85,6 +97,19 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
     if device_name == "auto":
         device_name = "cpu"
     device = torch.device(device_name)
+    print(
+        f"train config: device={device} split={config.split} feature_mode={config.feature_mode} "
+        f"epochs={config.epochs} patience={config.patience} batch_size={config.batch_size} "
+        f"learning_rate={config.learning_rate:g} hidden_dim={config.hidden_dim} "
+        f"num_layers={config.num_layers} history_length={config.history_length} "
+        f"dropout={config.dropout:g} num_workers={config.num_workers}",
+        flush=True,
+    )
+    print(
+        f"dataset sizes: train={len(datasets['train'])} validation={len(datasets['validation'])} "
+        f"test={len(datasets['test'])}",
+        flush=True,
+    )
     model = DySemKT(
         torch.from_numpy(data.question_features), hidden_dim=config.hidden_dim,
         num_heads=config.num_heads, num_layers=config.num_layers,
@@ -101,10 +126,15 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
     best_auc = -float("inf")
     stale = 0
     history = []
+    run_start = time.monotonic()
     for epoch in range(1, config.epochs + 1):
         model.train()
         losses = []
-        for batch in loaders["train"]:
+        epoch_start = time.monotonic()
+        total_batches = len(loaders["train"])
+        progress_every = max(1, min(50, total_batches // 10))
+        print(f"epoch {epoch}/{config.epochs} start, train batches={total_batches}", flush=True)
+        for batch_index, batch in enumerate(loaders["train"], start=1):
             batch = _to_device(batch, device)
             optimizer.zero_grad(set_to_none=True)
             loss = criterion(model(batch), batch["label"])
@@ -112,12 +142,32 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
             nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
             losses.append(float(loss.detach().cpu()))
+            if batch_index == 1 or batch_index == total_batches or batch_index % progress_every == 0:
+                elapsed = time.monotonic() - epoch_start
+                batches_per_second = batch_index / max(elapsed, 1e-9)
+                remaining_batches = total_batches - batch_index
+                eta_epoch = remaining_batches / max(batches_per_second, 1e-9)
+                average_loss = float(np.mean(losses))
+                print(
+                    f"  train progress: batch {batch_index}/{total_batches} "
+                    f"loss={losses[-1]:.4f} avg_loss={average_loss:.4f} "
+                    f"speed={batches_per_second:.2f} batch/s eta_epoch={_format_duration(eta_epoch)}",
+                    flush=True,
+                )
+        print(f"epoch {epoch}/{config.epochs} validation start", flush=True)
         validation = evaluate(model, loaders["validation"], device)
         row = {"epoch": epoch, "train_loss": float(np.mean(losses)), "validation": validation}
         history.append(row)
+        epoch_seconds = time.monotonic() - epoch_start
+        elapsed_run = time.monotonic() - run_start
+        average_epoch = elapsed_run / epoch
+        eta_run = average_epoch * (config.epochs - epoch)
         print(
-            f"epoch={epoch:03d} loss={row['train_loss']:.4f} "
-            f"val_auc={validation['roc_auc']:.4f} val_ap={validation['average_precision']:.4f}"
+            f"epoch {epoch}/{config.epochs} done in {_format_duration(epoch_seconds)} "
+            f"loss={row['train_loss']:.4f} val_auc={validation['roc_auc']:.4f} "
+            f"val_ap={validation['average_precision']:.4f} "
+            f"elapsed={_format_duration(elapsed_run)} eta_total={_format_duration(eta_run)}",
+            flush=True,
         )
         score = validation["roc_auc"]
         if np.isnan(score):
@@ -126,12 +176,16 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
             best_auc = score
             stale = 0
             torch.save({"model": model.state_dict(), "config": asdict(config)}, output_dir / "best.pt")
+            print(f"  checkpoint saved: {output_dir / 'best.pt'}", flush=True)
         else:
             stale += 1
+            print(f"  no validation improvement, stale={stale}/{config.patience}", flush=True)
             if stale >= config.patience:
+                print(f"early stopping at epoch {epoch}", flush=True)
                 break
     checkpoint = torch.load(output_dir / "best.pt", map_location=device, weights_only=True)
     model.load_state_dict(checkpoint["model"])
+    print("final validation and test evaluation start", flush=True)
     result = {
         "best_validation": evaluate(model, loaders["validation"], device),
         "test": evaluate(model, loaders["test"], device),
@@ -139,4 +193,5 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
         "split_counts": {name: len(dataset) for name, dataset in datasets.items()},
     }
     write_json(output_dir / "metrics.json", result)
+    print(f"metrics saved: {output_dir / 'metrics.json'}", flush=True)
     return result

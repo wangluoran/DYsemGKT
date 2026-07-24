@@ -1,0 +1,11 @@
+{
+  "data_dir": "data/processed/moocradar_api",
+  "output_dir": "outputs/semantic_temporal_lr5e5",
+  "split": "temporal",
+  "feature_mode": "semantic",
+  "batch_size": 1024,
+  "learning_rate": 0.00005,
+  "epochs": 10,
+  "patience": 3,
+  "device": "auto"
+}

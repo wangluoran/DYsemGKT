@@ -27,23 +27,24 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--seed", type=int, default=42)
 
     fit = commands.add_parser("train", help="train and evaluate DySemKT")
-    fit.add_argument("--data-dir", type=Path, required=True)
-    fit.add_argument("--output-dir", type=Path, required=True)
-    fit.add_argument("--split", choices=["temporal", "cold"], default="temporal")
-    fit.add_argument("--feature-mode", choices=["semantic", "id", "hybrid"], default="hybrid")
-    fit.add_argument("--hidden-dim", type=int, default=256)
-    fit.add_argument("--num-heads", type=int, default=4)
-    fit.add_argument("--num-layers", type=int, default=2)
-    fit.add_argument("--history-length", type=int, default=50)
-    fit.add_argument("--dropout", type=float, default=0.1)
-    fit.add_argument("--batch-size", type=int, default=256)
-    fit.add_argument("--learning-rate", type=float, default=5e-4)
-    fit.add_argument("--weight-decay", type=float, default=1e-4)
-    fit.add_argument("--epochs", type=int, default=30)
-    fit.add_argument("--patience", type=int, default=5)
-    fit.add_argument("--device", default="auto")
-    fit.add_argument("--seed", type=int, default=42)
-    fit.add_argument("--num-workers", type=int, default=0)
+    fit.add_argument("--config", type=Path, help="optional JSON train configuration")
+    fit.add_argument("--data-dir", type=Path)
+    fit.add_argument("--output-dir", type=Path)
+    fit.add_argument("--split", choices=["temporal", "cold"])
+    fit.add_argument("--feature-mode", choices=["semantic", "id", "hybrid"])
+    fit.add_argument("--hidden-dim", type=int)
+    fit.add_argument("--num-heads", type=int)
+    fit.add_argument("--num-layers", type=int)
+    fit.add_argument("--history-length", type=int)
+    fit.add_argument("--dropout", type=float)
+    fit.add_argument("--batch-size", type=int)
+    fit.add_argument("--learning-rate", type=float)
+    fit.add_argument("--weight-decay", type=float)
+    fit.add_argument("--epochs", type=int)
+    fit.add_argument("--patience", type=int)
+    fit.add_argument("--device")
+    fit.add_argument("--seed", type=int)
+    fit.add_argument("--num-workers", type=int)
 
     inspect = commands.add_parser("inspect", help="print processed dataset metadata")
     inspect.add_argument("--data-dir", type=Path, required=True)
@@ -51,7 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command == "preprocess":
         if args.encoder == "hash":
             encoder = HashTextEncoder(args.embedding_dim)
@@ -64,8 +66,30 @@ def main(argv: list[str] | None = None) -> None:
             min_user_interactions=args.min_user_interactions, seed=args.seed,
         )
     elif args.command == "train":
-        config = TrainConfig(**{name: getattr(args, name) for name in TrainConfig.__dataclass_fields__})
-        result = train(args.data_dir, args.output_dir, config)
+        values = {}
+        if args.config is not None:
+            with args.config.open("r", encoding="utf-8") as handle:
+                values = json.load(handle)
+            if not isinstance(values, dict):
+                parser.error("--config must point to a JSON object")
+
+        data_dir = args.data_dir or values.pop("data_dir", None)
+        output_dir = args.output_dir or values.pop("output_dir", None)
+        if data_dir is None or output_dir is None:
+            parser.error("train requires --data-dir and --output-dir, or a --config containing data_dir and output_dir")
+
+        defaults = TrainConfig()
+        train_values = {name: getattr(defaults, name) for name in TrainConfig.__dataclass_fields__}
+        for name in tuple(values):
+            if name not in train_values:
+                parser.error(f"unknown train config key: {name}")
+            train_values[name] = values.pop(name)
+        for name in TrainConfig.__dataclass_fields__:
+            value = getattr(args, name)
+            if value is not None:
+                train_values[name] = value
+        config = TrainConfig(**train_values)
+        result = train(Path(data_dir), Path(output_dir), config)
     else:
         result = ProcessedData(args.data_dir).metadata
     print(json.dumps(result, ensure_ascii=False, indent=2))
