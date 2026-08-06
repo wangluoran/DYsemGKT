@@ -12,8 +12,8 @@ def test_end_to_end_training_writes_checkpoint_and_metrics(raw_moocradar, tmp_pa
     output_dir = tmp_path / "run"
     preprocess_moocradar(raw_moocradar, data_dir, HashTextEncoder(16))
     config = TrainConfig(
-        hidden_dim=16, num_heads=2, num_layers=1, history_length=4,
-        batch_size=16, epochs=1, patience=1, feature_mode="semantic",
+        d_model=16, history_length=4, batch_size=16, epochs=1, patience=1,
+        feature_mode="semantic",
     )
     result = train(data_dir, output_dir, config)
     assert (output_dir / "best.pt").exists()

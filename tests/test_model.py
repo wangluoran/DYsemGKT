@@ -22,13 +22,17 @@ def _batch(batch_size=3, history=5):
         "question_response": torch.randint(0, 2, (batch_size, history)),
         "question_delta": torch.rand(batch_size, history) * 1000,
         "question_mask": torch.tensor([[False] * history, [False, False, True, True, True], [True] * history]),
+        "self_response": torch.randint(0, 2, (batch_size, history)),
+        "self_delta": torch.rand(batch_size, history) * 1000,
+        "self_mask": torch.tensor([[False] * history, [False, False, True, False, False], [True, True, False, False, False]]),
+        "global_stats": torch.rand(batch_size, 3),
     }
 
 
 def test_all_feature_modes_forward_and_backward():
     features = torch.randn(6, 20)
     for mode in ("semantic", "id", "hybrid"):
-        model = DySemKT(features, hidden_dim=16, num_heads=2, num_layers=1, max_history=5, feature_mode=mode)
+        model = DySemKT(features, d_model=16, max_history=5, feature_mode=mode)
         logits = model(_batch())
         assert logits.shape == (3,)
         assert torch.isfinite(logits).all()

@@ -10,6 +10,40 @@ from torch.utils.data import Dataset
 from .io import read_json
 
 
+def compute_global_stats(data: ProcessedData, train_mask: np.ndarray) -> np.ndarray:
+    """Compute per-question global statistics from training data only.
+
+    Returns (num_items, 3): [avg_correctness, log(1+attempts), avg_log_time]
+    """
+    num_items = len(data.question_features)
+    correct = np.zeros(num_items, dtype=np.float64)
+    counts = np.zeros(num_items, dtype=np.float64)
+    time_sum = np.zeros(num_items, dtype=np.float64)
+
+    train_idx = np.flatnonzero(train_mask)
+    items = data.item[train_idx]
+    labels = data.label[train_idx]
+    timestamps = data.timestamp[train_idx]
+
+    for i, it in enumerate(items):
+        correct[it] += labels[i]
+        counts[it] += 1.0
+        # Average inter-event time as a proxy for time spent
+        if i > 0 and train_idx[i] == train_idx[i - 1] + 1:
+            pass  # not computing per-item time for now, use 0
+    # Approximate: use overall timestamp span per item
+    for it in range(num_items):
+        item_events = np.flatnonzero((items == it))
+        if len(item_events) > 1:
+            time_sum[it] = float(timestamps[item_events[-1]] - timestamps[item_events[0]])
+
+    avg_correct = np.divide(correct, counts, where=counts > 0, out=np.full_like(correct, 0.5))
+    log_attempts = np.log1p(counts) / 10.0
+    avg_log_time = np.log1p(np.divide(time_sum, counts, where=counts > 0, out=np.zeros_like(time_sum))) / 16.0
+
+    return np.stack([avg_correct, log_attempts, avg_log_time], axis=-1).astype(np.float32)
+
+
 class ProcessedData:
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
@@ -41,6 +75,89 @@ class ProcessedData:
         ]
 
 
+def build_history_cache(
+    data: ProcessedData,
+    allowed_mask: np.ndarray,
+    history_length: int = 40,
+    cache_path: Path | None = None,
+) -> np.ndarray:
+    """Precompute hybrid retrieval results for all events.
+
+    Returns (num_events, history_length) int64 array of event indices, with -1 for padding.
+    Call this ONCE before training; the dataset will read from the cache instead of
+    running hybrid retrieval on every __getitem__ call.
+    """
+    # Build user_events from allowed_mask (same as TemporalHistoryDataset)
+    user_events: dict[int, list[int]] = {}
+    for event in np.flatnonzero(allowed_mask):
+        user_events.setdefault(int(data.user[event]), []).append(int(event))
+
+    n_total = len(data.user)
+    cache = np.full((n_total, history_length), -1, dtype=np.int64)
+
+    n_forced = min(16, history_length)
+    n_scored = history_length - n_forced
+    candidate_pool = 256
+
+    for event in range(n_total):
+        user = int(data.user[event])
+        item = int(data.item[event])
+        values = user_events.get(user, [])
+        end = bisect_left(values, event)
+        all_history = values[:end]
+
+        if len(all_history) <= n_forced:
+            selected = all_history
+        else:
+            recent = all_history[-n_forced:]
+            remaining = all_history[:-n_forced]
+            if len(remaining) > candidate_pool:
+                remaining = remaining[-candidate_pool:]
+
+            scores: list[tuple[int, float]] = []
+            current_exercise = int(data.item_exercise[item])
+            current_concepts = data.item_concepts[item]
+
+            for e in remaining:
+                h_item = int(data.item[e])
+                if h_item == item:                     # exclude same question
+                    continue
+
+                se = 0.0
+                if current_exercise >= 0:
+                    h_exercise = int(data.item_exercise[h_item])
+                    if h_exercise >= 0 and h_exercise == current_exercise:
+                        se = 1.0
+
+                co = 0.0
+                h_concepts = data.item_concepts[h_item]
+                union = current_concepts | h_concepts
+                if union:
+                    co = len(current_concepts & h_concepts) / len(union)
+
+                score = 1.5 * 0 + 1.0 * se + 0.8 * co  # I_same_q(=0 excluded)+I_same_ex+concept_overlap
+                if score > 0:
+                    scores.append((e, score))
+
+            scores.sort(key=lambda x: x[1], reverse=True)
+            top_scored = [e for e, _ in scores[:n_scored]]
+            selected = sorted(set(recent + top_scored))
+
+        if selected:
+            cache[event, -len(selected):] = selected
+
+        if (event + 1) % 100_000 == 0:
+            print(f"  history cache: {event+1}/{n_total} events processed", flush=True)
+
+    print(f"  history cache: {n_total}/{n_total} events done", flush=True)
+
+    if cache_path is not None:
+        np.save(cache_path, cache)
+        print(f"  history cache saved to {cache_path}", flush=True)
+
+    return cache
+
+
 class TemporalHistoryDataset(Dataset):
     """Creates leak-safe two-sided histories for selected prediction events."""
 
@@ -48,8 +165,10 @@ class TemporalHistoryDataset(Dataset):
         self,
         data: ProcessedData,
         indices: np.ndarray,
-        history_length: int = 50,
+        history_length: int = 40,
         allowed_history: np.ndarray | None = None,
+        global_stats: np.ndarray | None = None,
+        history_cache: np.ndarray | None = None,
     ) -> None:
         self.data = data
         self.indices = np.asarray(indices, dtype=np.int64)
@@ -65,6 +184,15 @@ class TemporalHistoryDataset(Dataset):
             self.user_events.setdefault(int(data.user[event]), []).append(int(event))
             self.item_events.setdefault(int(data.item[event]), []).append(int(event))
 
+        # Precomputed history cache: (num_events, history_length), -1 = padding
+        self.history_cache = history_cache
+
+        # Per-question global stats: (num_items, 3) — [avg_correctness, log_attempts, avg_log_time]
+        if global_stats is not None:
+            self.global_stats = np.asarray(global_stats, dtype=np.float32)
+        else:
+            self.global_stats = np.zeros((len(data.question_features), 3), dtype=np.float32)
+
     def __len__(self) -> int:
         return len(self.indices)
 
@@ -72,6 +200,72 @@ class TemporalHistoryDataset(Dataset):
         values = mapping.get(key, [])
         end = bisect_left(values, event)
         return values[max(0, end - self.history_length) : end]
+
+    def _hybrid_retrieval(self, user: int, event: int, current_item: int) -> list[int]:
+        """Hybrid retrieval: forced recent 16 + structure-scored top 24 = max 40 items.
+
+        Score = 1.0*same_exercise + 0.8*concept_overlap (same-question excluded from
+        scored pool for label-leak prevention, but allowed in forced-recent window).
+
+        Candidate pool is capped at 256 for performance; items with score==0 are
+        excluded entirely.
+        """
+        values = self.user_events.get(user, [])
+        end = bisect_left(values, event)
+        all_history = values[:end]
+
+        n_forced = min(16, self.history_length)
+        n_scored = self.history_length - n_forced
+        candidate_pool = 256
+
+        if len(all_history) <= n_forced:
+            return all_history
+
+        # Force most recent N
+        recent = all_history[-n_forced:]
+        remaining = all_history[:-n_forced]
+
+        # Cap candidate pool for performance
+        if len(remaining) > candidate_pool:
+            remaining = remaining[-candidate_pool:]
+
+        # Score remaining candidates
+        scores: list[tuple[int, float]] = []
+        current_exercise = int(self.data.item_exercise[current_item])
+        current_concepts = self.data.item_concepts[current_item]
+
+        for e in remaining:
+            h_item = int(self.data.item[e])
+            # Exclude same question from scored pool (label-leak prevention)
+            if h_item == current_item:
+                continue
+
+            # same_exercise
+            se = 0.0
+            if current_exercise >= 0:
+                h_exercise = int(self.data.item_exercise[h_item])
+                if h_exercise >= 0 and h_exercise == current_exercise:
+                    se = 1.0
+
+            # concept_overlap
+            co = 0.0
+            h_concepts = self.data.item_concepts[h_item]
+            union = current_concepts | h_concepts
+            if union:
+                co = len(current_concepts & h_concepts) / len(union)
+
+            score = 1.5 * 0 + 1.0 * se + 0.8 * co  # I_same_q(=0 excluded)+I_same_ex+concept_overlap
+            if score > 0:
+                scores.append((e, score))
+
+        # Sort by score descending, take top N
+        scores.sort(key=lambda x: x[1], reverse=True)
+        top_scored = [e for e, _ in scores[:n_scored]]
+
+        # Merge and sort by event index (chronological order)
+        merged = sorted(set(recent + top_scored))
+
+        return merged
 
     def _padded(self, events: list[int], current_time: int, include_items: bool) -> dict[str, torch.Tensor]:
         length = self.history_length
@@ -140,10 +334,19 @@ class TemporalHistoryDataset(Dataset):
         user = int(self.data.user[event])
         item = int(self.data.item[event])
         current_time = int(self.data.timestamp[event])
-        student_events = self._history(self.user_events, user, event)
+        if self.history_cache is not None:
+            row = self.history_cache[event]
+            student_events = [int(e) for e in row[row >= 0].tolist()]
+        else:
+            student_events = self._hybrid_retrieval(user, event, item)
         student = self._padded(student_events, current_time, True)
         structure = self._student_structure(student_events, item, current_time)
         question = self._padded(self._history(self.item_events, item, event), current_time, False)
+
+        # Self-history: student's own past interactions with THIS specific question
+        self_events = [e for e in student_events if int(self.data.item[e]) == item]
+        self_history = self._padded(self_events, current_time, False)
+
         return {
             "event": torch.tensor(event),
             "item": torch.tensor(item),
@@ -162,4 +365,8 @@ class TemporalHistoryDataset(Dataset):
             "question_response": question["response"],
             "question_delta": question["delta"],
             "question_mask": question["mask"],
+            "self_response": self_history["response"],
+            "self_delta": self_history["delta"],
+            "self_mask": self_history["mask"],
+            "global_stats": torch.from_numpy(self.global_stats[item]),
         }

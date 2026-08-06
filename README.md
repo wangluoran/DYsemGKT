@@ -1,44 +1,59 @@
-# DySemKT：语义增强的动态图知识追踪
+# DySemKT — 语义增强的动态图知识追踪
 
-DySemKT 是一个面向知识追踪研究的精简项目，用于探索如何通过真实题目语义改进 DyGKT。项目保留 DyGKT 的学生-题目连续时间动态图思想，同时重新设计了明确的数据契约、无泄漏的数据处理流程和双侧动态历史模型。
+DySemKT 是一个用于知识追踪研究的紧凑项目，旨在探索如何通过题目实现两阶段的 DyGKT。该项目继承 DyGKT 的学生-题目-时间动态图思想，同时引入语义理解、防泄漏数据处理流程和双塔动态历史模型。
 
-项目当前首先支持 MOOCRadar。该数据集包含真实题干、选项和题目概念，因此模型学习的是题目内容语义，而不是把少量知识点名称复制给大量题目。
+项目当前版本支持 MOOCRadar 真实数据集。你可以完成端到端的题目语义学习，而不仅是预定义知识点的概率预测——模型学习题目本身的语义，而非依赖预定义知识点来泛化到未见题目。
 
-## 项目功能
+## 项目亮点
 
-- 读取、校验并按时间重新排序 MOOCRadar JSON 数据；
-- 构建可审计且不包含标准答案的题目文本；
-- 支持离线哈希文本特征、SentenceTransformer 本地语义特征和 OpenAI 兼容 embeddings API；
-- 提供全局时间划分和严格未见题目冷启动划分；
-- 实现 DySemKT：学生历史编码器、题目历史编码器和语义门控融合；
-- 显式建模同题重复、同练习单元、概念重叠、上次同题结果和重复间隔；
-- 提供 `semantic`、`id`、`hybrid` 三种题目表示模式用于消融实验；
-- 包含训练、验证、测试、早停、检查点和指标输出流程；
-- 包含数据处理、历史边界、模型反向传播和端到端训练测试。
+- 读取、校验并按时序排列 MOOCRadar JSON 数据；
+- 清理嘈杂文本并构建每道题的标准化答案文本；
+- 支持离线哈希文本编码、SentenceTransformer 语义编码，以及 OpenAI 兼容 embeddings API；
+- 提供全局时序划分和严格未见题目（cold）两种划分；
+- 实现 DySemKT：双塔关系感知注意力（学生侧 + 题目侧）+ 全局特征 + 语义残差；
+- 结构化注意力偏置权重：同题/同练习/概念重叠三个维度直接修改 attention logits；
+- 提供 `semantic`、`id`、`hybrid` 三种题目表示模式，方便对比实验；
+- 完整的训练/验证/测试/早停/指标报告流程；
+- 覆盖数据处理/历史边界/模型前向传播/端到端训练的全套测试。
 
 ## 模型概览
 
 ```text
-                         当前题目文本
-                              |
-                      预训练文本编码器
-                              |
-                       当前题目表示 e_q
-                              |
-             +----------------+----------------+
-             |                                 |
-      学生侧历史编码                      题目侧历史编码
-             |                                 |
-     student_state                      question_state
-             |                                 |
-             +-------------门控融合------------+
-                              |
-                  动态状态与当前题目匹配
-                              |
-                         P(correct)
+                    【输入】当前题 Q_raw (1024维 BGE) + 当前题 ID
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    ▼                                   ▼
+            【混合检索器】                        【全局特征提取器】
+    从该生历史中取40条：                    查这道题的全局统计：
+    强制最近16条 +                          (平均正确率, 尝试次数,
+    结构分数Top24                           平均耗时) → 3维
+    (按[同题,同练习,重叠]评分)                          │
+                    │                                   │
+                    ▼                                   │
+            【特征对齐】统一映射到128维                   │
+    语义512→128, 响应4→128,                             │
+    时间8→128, 结构16→128                               │
+    保留原始3维关系 → 用于注意力偏置                      │
+                    │                                   │
+        ┌───────────┴───────────┐                       │
+        ▼                       ▼                       ▼
+   【学生侧塔】            【题目侧塔】◄──────────────────┘
+   学习长期知识状态         学习题目绝对难度+近因记忆
+   (排除当前题ID,           (自历史: 该生在此题的过往尝试
+    4模态门控融合)            + 全局统计3维 + 可学习时间衰减τ)
+        │                       │
+        └───────────┬───────────┘
+                    ▼
+        【自适应门控融合】
+        student vs question → 2-way softmax gate
+                    +
+        【残差连接】原始BGE 1024 → Linear → 128
+                    ▼
+                【预测层】
+               P(correct)
 ```
 
-详细公式、张量维度和设计边界见[模型架构说明](docs/MODEL_ARCHITECTURE.md)。
+详细公式、维度说明和设计边界见[模型架构说明](docs/MODEL_ARCHITECTURE.md)。
 
 ## 目录结构
 
@@ -54,6 +69,9 @@ KT/
 |-- src/dysemkt/
 |   |-- cli.py
 |   |-- dataset.py
+|   |-- dygkt_data.py
+|   |-- dygkt_engine.py
+|   |-- dygkt_model.py
 |   |-- engine.py
 |   |-- metrics.py
 |   |-- model.py
@@ -66,19 +84,19 @@ KT/
 `-- README.md
 ```
 
-原始数据保持只读并默认放在 `data/raw/`。派生数据写入 `data/processed/`，实验输出写入 `outputs/`。这些目录均不会提交到 Git。
+原始数据存放于仓库默认忽略的 `data/raw/`，处理结果写入 `data/processed/`，实验结果写入 `outputs/`。这些目录不被提交到 Git。
 
 ## 环境安装
 
-项目使用 [uv](https://docs.astral.sh/uv/) 管理 Python、虚拟环境和锁定依赖。仓库通过 `.python-version` 默认使用 Python 3.13，通过 `uv.lock` 固定完整依赖版本，并在 `pyproject.toml` 中配置清华 PyPI 镜像以提高国内安装速度。项目兼容 Python 3.11 至 3.13。
+项目使用 [uv](https://docs.astral.sh/uv/) 管理 Python 虚拟环境和依赖。仓库通过 `.python-version` 默认使用 Python 3.13，通过 `uv.lock` 锁定依赖版本，并在 `pyproject.toml` 中配置清华 PyPI 镜像，提高国内安装速度。项目兼容 Python 3.11 至 3.13。
 
-克隆仓库后，在仓库根目录安装锁定的核心依赖和开发依赖：
+克隆仓库后在仓库目录内安装核心依赖和开发工具即可：
 
 ```console
 uv sync --frozen
 ```
 
-如果本机已经安装 Python 3.13，并希望禁止 uv 下载 Python，可使用：
+如果你系统已经安装 Python 3.13，并希望阻止 uv 自动下载 Python，请使用：
 
 ```console
 uv sync --frozen --python 3.13 --no-python-downloads
@@ -90,27 +108,27 @@ uv sync --frozen --python 3.13 --no-python-downloads
 uv run --frozen pytest
 ```
 
-正式语义实验还需要安装 `semantic` 可选依赖：
+正式运行实验还需要安装 `semantic` 可选依赖：
 
 ```console
 uv sync --frozen --extra semantic
 ```
 
-当前项目测试包括：
+当前项目测试覆盖包括：
 
-- 题目文本不包含标准答案；
-- 原始逆序交互被正确排序；
-- 时间划分和冷启动题目集合符合约束；
-- 学生侧与题目侧历史严格早于当前事件；
-- 验证集和测试集标签不会进入允许历史；
-- 三种题目表示模式均可完成前向与反向传播；
-- 微型数据可以完成端到端训练、评估和检查点保存。
+- 题目文本清理与标准化答案构建；
+- 原始交互数据完整性校验；
+- 时序划分和未见题目划分的防泄漏约束；
+- 学生和题目历史严格位于当前事件之前；
+- 验证集和测试集标签不超过训练历史；
+- 多种题目表示模式下的前向和反向传播；
+- 小规模数据上可运行的端到端训练、评估和检查点保存。
 
 ## 数据预处理
 
-下载链接：https://bhpan.buaa.edu.cn/anyshare/zh-cn/link/AAE5A458AFE444474EBEC928F98986E5B8?_tb=none&expires_at=2030-10-31T23%3A59%3A46%2B08%3A00&item_type=folder&password_required=false&title=MOOCRadar&type=anonymous
+数据链接：https://bhpan.buaa.edu.cn/anyshare/zh-cn/link/AAE5A458AFE444474EBEC928F98986E5B8?_tb=none&expires_at=2030-10-31T23%3A59%3A46%2B08%3A00&item_type=folder&password_required=false&title=MOOCRadar&type=anonymous
 
-下载 MOOCRadar 后，将四个原始文件放入以下仓库相对目录：
+下载 MOOCRadar 后，将四个原始文件放置到仓库根目录下：
 
 ```text
 data/raw/moocradar/
@@ -120,306 +138,70 @@ data/raw/moocradar/
 `-- student-problem-fine.json
 ```
 
-所有后续命令均从仓库根目录运行，不依赖任何用户或操作系统的绝对路径。
+后续命令均在仓库根目录运行，不依赖任何用户或系统的具体路径。
 
-## 完整运行流程
+## 命令行使用
 
-以下命令覆盖环境安装、测试、正式 embedding 生成、数据检查和模型训练。第一次执行 BGE-M3 预处理时会下载模型，后续运行复用本地缓存。
+以下命令覆盖从数据处理到模型训练的全部操作。正式实验建议在 `tmux` 或 `screen` 会话中运行，避免终端断开导致训练中断。
 
-```console
-# 1. 安装锁定依赖，包括 SentenceTransformer
-uv sync --frozen --extra semantic
+### 数据预处理与语义编码
 
-# 2. 运行项目测试
-uv run --frozen pytest
-
-# 3. 生成正式题目 embedding 和处理后交互数据
-uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name BAAI/bge-m3 --batch-size 32 --device cuda
-
-# 4. 检查处理结果
-uv run --frozen dysemkt inspect --data-dir data/processed/moocradar_bge
-
-# 5. 普通时间划分训练
-uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/hybrid_temporal --split temporal --feature-mode hybrid
-
-# 6. 严格未见题目冷启动训练
-uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/semantic_cold --split cold --feature-mode semantic
-```
-
-没有 CUDA 时，删除预处理命令末尾的 `--device cuda`，模型训练会自动回退到 CPU。BGE-M3 在 CPU 上能够运行，但速度会明显更慢。
-
-### 1. 离线流程验证
-
-哈希编码器不需要下载模型，适合验证数据处理和训练流程：
+默认使用 BGE-M3（SentenceTransformer），首次运行会自动下载模型：
 
 ```console
-uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_hash --encoder hash --embedding-dim 256
+uv run --frozen dysemkt preprocess --data-dir data/raw/moocradar --out data/processed/moocradar_api
 ```
 
-哈希编码器只是确定性的字符 n-gram 特征，不能用于支持正式的题目语义研究结论。
-
-### 2. 正式语义实验：自动下载模型后本地计算
-
-使用多语言 SentenceTransformer，例如 BGE-M3：
+如需使用哈希替代语义编码（仅用于验证数据管线）：
 
 ```console
-uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name BAAI/bge-m3 --batch-size 32
+uv run --frozen dysemkt preprocess --data-dir data/raw/moocradar --out data/processed/moocradar_api_hash --encoder hash
 ```
 
-这里的 `BAAI/bge-m3` 是 Hugging Face 模型标识，不是远程 embedding API。执行过程如下：
-
-```text
-题干、选项、概念
-        |
-首次运行时下载 BAAI/bge-m3 到 Hugging Face 本地缓存
-        |
-SentenceTransformer 在本机 CPU/GPU 上批量推理
-        |
-生成 question_features.npy
-        |
-训练阶段直接读取该文件，不再加载或调用文本模型
-```
-
-可以通过 `--device cuda` 指定 GPU 编码：
+如需使用外部 embedding API（OpenAI 兼容格式）：
 
 ```console
-uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name BAAI/bge-m3 --batch-size 32 --device cuda
+uv run --frozen dysemkt preprocess --data-dir data/raw/moocradar --out data/processed/moocradar_api_openai --encoder openai:your-model-name
 ```
 
-### 3. 使用本地模型目录
+### 模型训练
 
-如果已经下载并固定了 SentenceTransformer 模型快照，可以放入被 Git 忽略的 `data/models/`：
-
-```text
-data/models/bge-m3/
-|-- config.json
-|-- modules.json
-|-- model.safetensors
-`-- ...
-```
-
-将本地目录直接传给 `--model-name`：
+语义特征 + 严格未见题目划分（semantic + cold）：
 
 ```console
-uv run --frozen --extra semantic dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_bge --encoder sentence-transformer --model-name data/models/bge-m3 --batch-size 32 --device cuda
+uv run --frozen dysemkt train     --data-dir data/processed/moocradar_api     --output-dir outputs/semantic_cold     --split cold     --feature-mode semantic     --batch-size 1024
 ```
 
-本地目录模式不会通过 embedding API 发送题目数据。为了严格复现实验，建议记录模型仓库、具体 revision 或 commit，并保留处理目录中的 `metadata.json`。
-
-### 4. API embedding
-
-项目支持 OpenAI 兼容的 embeddings API。API 只在预处理阶段调用一次，生成 `question_features.npy` 后，后续 KT 训练不再访问远程服务。
-
-API 模型和服务配置写入仓库根目录的 `.env`。先复制 `.env.example`：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-OpenAI 示例：
-
-```dotenv
-DYSEMKT_API_MODEL=text-embedding-3-small
-DYSEMKT_API_BASE_URL=https://api.openai.com/v1
-DYSEMKT_API_KEY_ENV=OPENAI_API_KEY
-DYSEMKT_API_OUTPUT_DIM=256
-# 仅当服务商支持 OpenAI 的 dimensions 请求参数时才设置：
-# DYSEMKT_API_REQUEST_DIMENSIONS=256
-DYSEMKT_API_CACHE_DIR=data/processed/api_cache/openai
-DYSEMKT_API_TIMEOUT=60
-DYSEMKT_API_MAX_RETRIES=3
-OPENAI_API_KEY=sk-...
-```
-
-SiliconFlow 或其他 OpenAI 兼容服务示例：
-
-```dotenv
-DYSEMKT_API_MODEL=BAAI/bge-m3
-DYSEMKT_API_BASE_URL=https://api.siliconflow.cn/v1
-DYSEMKT_API_KEY_ENV=SILICONFLOW_API_KEY
-DYSEMKT_API_CACHE_DIR=data/processed/api_cache/siliconflow
-# 不要设置 DYSEMKT_API_REQUEST_DIMENSIONS，除非服务商文档明确支持。
-SILICONFLOW_API_KEY=...
-```
-
-运行预处理时，CLI 只选择 API 编码器，不传模型配置：
+纯 ID 特征 + 时序划分（id + temporal）：
 
 ```console
-uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_api --encoder api --batch-size 32
+uv run --frozen dysemkt train     --data-dir data/processed/moocradar_api     --output-dir outputs/id_temporal     --split temporal     --feature-mode id
 ```
 
-相关 `.env` 参数：
-
-- `DYSEMKT_API_MODEL`：embedding 模型名；
-- `DYSEMKT_API_BASE_URL`：OpenAI 兼容 API 根地址，默认 `https://api.openai.com/v1`；
-- `DYSEMKT_API_KEY_ENV`：读取 API Key 的环境变量名，默认 `OPENAI_API_KEY`；
-- `DYSEMKT_API_OUTPUT_DIM`：可选本地响应维度校验，不会发送给 API；
-- `DYSEMKT_API_REQUEST_DIMENSIONS`：可选请求参数，只有服务商支持 OpenAI `dimensions` 参数时才设置；
-- `DYSEMKT_API_CACHE_DIR`：逐题缓存 embedding，断点重跑时会复用已完成请求；
-- `DYSEMKT_API_TIMEOUT` 和 `DYSEMKT_API_MAX_RETRIES`：控制超时与 429、5xx 或网络失败后的重试。
-
-API 路径会把题目文本发送给外部服务，并依赖服务商的模型版本、网络、配额和计费。正式复现实验建议固定 `metadata.json`、保留 API 缓存，或优先使用本地 SentenceTransformer 快照。
-
-### 5. Embedding 如何进入模型
-
-embedding 只在预处理阶段生成一次，数据流为：
-
-```text
-TextEncoder.encode(题目文本列表)
-        |
-question_features.npy，形状为 (题目数, 文本向量维度)
-        |
-ProcessedData.question_features
-        |
-DySemKT(question_features=...)
-        |
-冻结原始文本向量 + 可训练线性投影
-        |
-256 维题目语义表示
-```
-
-原始 embedding 在 KT 训练阶段注册为固定 buffer，不被梯度更新；可训练的是从原始文本维度到模型隐藏维度的投影层。这样不同 KT 消融实验使用完全相同的基础文本特征。
-
-题目编码文本包括：
-
-- 题目组标题；
-- 真实题干；
-- 选项文本；
-- 题目概念。
-
-标准答案不会进入文本编码。损坏题目、无效标签和过短学生序列会被记录在 `metadata.json`，而不是静默忽略。
-
-## 检查处理结果
+混合特征 + 未见题目划分（hybrid + cold）：
 
 ```console
-uv run --frozen dysemkt inspect --data-dir data/processed/moocradar_bge
+uv run --frozen dysemkt train     --data-dir data/processed/moocradar_api     --output-dir outputs/hybrid_cold     --split cold     --feature-mode hybrid
 ```
 
-处理目录包含：
+### 常用命令行参数
 
-```text
-events.npz
-question_features.npy
-question_text.jsonl
-question_context.json
-mappings.json
-metadata.json
+```
+--encoder / --no-encoder      是否使用/跳过语义编码
+--split cold|temporal         数据划分方式
+--feature-mode semantic|id|hybrid   题目特征模式
+--batch-size N                训练批次大小（默认 256）
+--epochs N                    最大训练轮数
+--patience N                  早停耐心值
+--lr LR                       学习率
+--seed SEED                   随机种子
+--d-model N                   模型隐藏维度（默认 128）
+--max-history N               每侧历史窗口大小（默认 40）
+--history-cache PATH          预计算 history cache 路径（可选，加速训练）
 ```
 
-其中 `metadata.json` 记录数据规模、划分数量、文本编码器、随机种子、拒绝记录和原始文件 SHA-256 指纹。
+## 补充说明
 
-## 模型训练
-
-### 普通时间预测
-
-默认使用语义与题目 ID 的混合表示：
-
-```console
-uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/hybrid_temporal --split temporal --feature-mode hybrid
-```
-
-### 严格未见题目冷启动
-
-冷启动实验主要使用纯语义模式，避免未训练的题目 ID embedding 干扰结果：
-
-```console
-uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/semantic_cold --split cold --feature-mode semantic
-```
-
-### ID 对照实验
-
-```console
-uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/id_temporal --split temporal --feature-mode id
-```
-
-训练默认自动使用可用的 CUDA 设备，否则使用 CPU。可显式指定：
-
-```console
-uv run --frozen dysemkt train --data-dir data/processed/moocradar_bge --output-dir outputs/run --device cuda
-```
-
-## 默认训练参数
-
-| 参数 | 默认值 |
-|---|---:|
-| 隐藏维度 | 256 |
-| 学生侧 Transformer 层数 | 2 |
-| 题目侧 Transformer 层数 | 1 |
-| 注意力头数 | 4 |
-| 双侧历史长度 | 50 |
-| Dropout | 0.1 |
-| Batch size | 256 |
-| 学习率 | 0.0005 |
-| 权重衰减 | 0.0001 |
-| 最大训练轮数 | 30 |
-| Early stopping patience | 5 |
-
-完整默认配置见 [configs/default.json](configs/default.json)。
-
-## 训练输出
-
-每个实验目录包含：
-
-```text
-config.json
-metrics.json
-best.pt
-```
-
-`metrics.json` 报告：
-
-- ROC-AUC；
-- Average Precision；
-- Log Loss；
-- Accuracy；
-- 每轮训练损失和验证指标；
-- 训练、验证和测试样本数。
-
-MOOCRadar 的正确率约为 81.55%，类别存在明显不平衡，因此不能只根据 Accuracy 判断模型效果。
-
-## 数据泄漏约束
-
-默认评估只允许训练集交互作为学生侧和题目侧的标签历史：
-
-```python
-allowed_history = train_mask
-```
-
-因此验证集和测试集答案不会通过动态图历史进入后续预测。该设置比真实在线学习更保守，但更适合作为第一阶段研究基线。
-
-此外：
-
-- 文本输入不包含标准答案；
-- 当前标签不参与当前事件编码；
-- 当前事件只能访问索引更小的历史事件；
-- 同题重复次数、上次结果和重复间隔只从允许历史计算；
-- 不使用基于全数据标签计算的难度或区分度；
-- 冷启动划分中的题目集合在训练、验证和测试之间严格互斥。
-
-## 推荐实验矩阵
-
-| 实验 | 划分 | 特征模式 | 目的 |
-|---|---|---|---|
-| ID Temporal | 时间 | `id` | 传统题目 ID 基线 |
-| Semantic Temporal | 时间 | `semantic` | 验证真实语义贡献 |
-| Hybrid Temporal | 时间 | `hybrid` | 验证语义与 ID 互补性 |
-| Semantic Cold | 题目互斥 | `semantic` | 验证未见题目迁移能力 |
-
-正式报告应运行多个随机种子，并在相同数据划分、历史长度和训练参数下比较三种表示模式。
-
-## 项目文档
-
-- [项目边界](docs/BOUNDARIES.md)
-- [架构蓝图](docs/BLUEPRINT.md)
-- [详细模型架构](docs/MODEL_ARCHITECTURE.md)
-- [处理后数据契约](docs/DATA_CONTRACT.md)
-
-## 当前边界
-
-当前版本聚焦于验证真实题目语义和双侧时间历史，不包括所有原始 DyGKT 基线，也暂未将课程层级、练习层级、认知维度或概念图作为独立可训练模块。
-
-本项目能够支持的研究问题是：
-
-> 在固定的连续时间知识追踪框架下，真实题目文本语义能否改善普通预测和未见题目迁移？
-
-它不能直接支持因果学习效果、教学策略有效性或生产推荐效果等结论。
+- **Temporal 划分需要谨慎解读**：label 极度不平衡（~75% 正确），时序划分引入的用户行为漂移会同时影响训练和评估。本项目的默认划分是 conservative 的 cold split。
+- **语义模型建议固定**：当前管线以 frozen 方式使用语义编码器，微调编码器本身需要额外实验和验证。
+- **向项目贡献**：请在独立的 git 分支上提交修改，并确保所有测试通过（`uv run --frozen pytest`）。
