@@ -200,6 +200,62 @@ uv run --frozen dysemkt train     --data-dir data/processed/moocradar_api     --
 --history-cache PATH          预计算 history cache 路径（可选，加速训练）
 ```
 
+## DyGKT 基线
+
+项目完整保留了 DyGKT 模型（`src/dysemkt/dygkt_model.py`），可在相同数据管线中直接对比：
+
+```console
+# DyGKT 冷启动
+uv run --frozen dysemkt train --model dygkt \
+    --data-dir data/processed/moocradar_api \
+    --output-dir outputs/dygkt_cold \
+    --split cold \
+    --batch-size 1024
+
+# DyGKT 时序划分
+uv run --frozen dysemkt train --model dygkt \
+    --data-dir data/processed/moocradar_api \
+    --output-dir outputs/dygkt_temporal \
+    --split temporal \
+    --batch-size 1024
+```
+
+DyGKT 与 DySemKT 的核心区别：
+
+| 维度 | DyGKT | DySemKT |
+|------|-------|---------|
+| 序列编码 | GRU | 单层关系感知 Attention |
+| 多模态融合 | add 混合 | 4模态独立 K/V + 门控融合 |
+| 结构特征 | 普通加性特征 | 劫持 attention logits（标量偏置） |
+| 语义残差 | 无 | BGE 1024→128 直达预测层 |
+| 题目塔 | GRU 对称 | 非对称：自历史 + 全局统计 + Q-K对齐 |
+
+## 默认训练参数
+
+| 参数 | DySemKT | DyGKT |
+|------|---------|-------|
+| d_model / node_dim | 128 | 64 |
+| max_history / num_neighbors | 40 | 50 |
+| dropout | 0.1 | 0.5 |
+| batch_size | 256 | 256 |
+| 学习率 | 3e-4 (余弦退火至 3e-6) | 5e-4 |
+| 权重衰减 | 1e-4 | 1e-4 |
+| 最大轮数 | 30 | 30 |
+| Early stopping | ROC-AUC, patience=5 | ROC-AUC, patience=5 |
+
+## 推荐实验矩阵
+
+| 实验 | 模型 | 划分 | 特征模式 | 目的 |
+|------|------|------|----------|------|
+| DyGKT Cold | dygkt | cold | — | DyGKT 冷启动基线 |
+| DyGKT Temporal | dygkt | temporal | — | DyGKT 时序基线 |
+| ID Temporal | dysemkt | temporal | id | 纯 ID 基线（无语义泄漏） |
+| Semantic Cold | dysemkt | cold | semantic | 未见题目迁移能力 |
+| Hybrid Cold | dysemkt | cold | hybrid | 语义+ID 互补验证 |
+| Semantic Temporal | dysemkt | temporal | semantic | 时序下语义贡献验证 |
+
+正式报告应运行多个随机种子（`--seed 42 123 456`），在相同数据划分和参数下比较。
+
 ## 补充说明
 
 - **Temporal 划分需要谨慎解读**：label 极度不平衡（~75% 正确），时序划分引入的用户行为漂移会同时影响训练和评估。本项目的默认划分是 conservative 的 cold split。
