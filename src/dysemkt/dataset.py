@@ -80,12 +80,14 @@ def build_history_cache(
     allowed_mask: np.ndarray,
     history_length: int = 40,
     cache_path: Path | None = None,
+    retrieval: str = "hybrid",
 ) -> np.ndarray:
-    """Precompute hybrid retrieval results for all events.
+    """Precompute retrieval results for all events.
+
+    retrieval="hybrid": forced recent 16 + structure-scored top 24 (N=40)
+    retrieval="recent": simple last N (pure recency baseline)
 
     Returns (num_events, history_length) int64 array of event indices, with -1 for padding.
-    Call this ONCE before training; the dataset will read from the cache instead of
-    running hybrid retrieval on every __getitem__ call.
     """
     # Build user_events from allowed_mask (same as TemporalHistoryDataset)
     user_events: dict[int, list[int]] = {}
@@ -94,6 +96,24 @@ def build_history_cache(
 
     n_total = len(data.user)
     cache = np.full((n_total, history_length), -1, dtype=np.int64)
+
+    if retrieval == "recent":
+        # Pure recent-N: just take the last history_length items
+        for event in range(n_total):
+            user = int(data.user[event])
+            values = user_events.get(user, [])
+            end = bisect_left(values, event)
+            all_history = values[:end]
+            if all_history:
+                selected = all_history[-history_length:]
+                cache[event, -len(selected):] = selected
+            if (event + 1) % 100_000 == 0:
+                print(f"  recent cache: {event+1}/{n_total} events processed", flush=True)
+        print(f"  recent cache: {n_total}/{n_total} events done", flush=True)
+        if cache_path is not None:
+            np.save(cache_path, cache)
+            print(f"  recent cache saved to {cache_path}", flush=True)
+        return cache
 
     n_forced = min(16, history_length)
     n_scored = history_length - n_forced
@@ -169,10 +189,12 @@ class TemporalHistoryDataset(Dataset):
         allowed_history: np.ndarray | None = None,
         global_stats: np.ndarray | None = None,
         history_cache: np.ndarray | None = None,
+        retrieval: str = "hybrid",
     ) -> None:
         self.data = data
         self.indices = np.asarray(indices, dtype=np.int64)
         self.history_length = history_length
+        self.retrieval = retrieval
         if history_length < 1:
             raise ValueError("history_length must be positive")
         if allowed_history is None:
@@ -202,6 +224,16 @@ class TemporalHistoryDataset(Dataset):
         return values[max(0, end - self.history_length) : end]
 
     def _hybrid_retrieval(self, user: int, event: int, current_item: int) -> list[int]:
+        """Retrieve history for one event.
+
+        retrieval="hybrid": forced recent 16 + structure-scored top 24 = max 40 items
+        retrieval="recent": pure last-N (no structure scoring)
+        """
+        if self.retrieval == "recent":
+            values = self.user_events.get(user, [])
+            end = bisect_left(values, event)
+            return values[max(0, end - self.history_length):end]
+
         """Hybrid retrieval: forced recent 16 + structure-scored top 24 = max 40 items.
 
         Score = 1.0*same_exercise + 0.8*concept_overlap (same-question excluded from

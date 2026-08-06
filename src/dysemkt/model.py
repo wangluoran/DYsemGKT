@@ -53,6 +53,7 @@ class DySemKT(nn.Module):
         # ── Feature alignment ──
         self.proj_q = nn.Linear(q_dim, d_model)          # current question → Q
         self.proj_k = nn.Linear(sem_dim, d_model)         # history semantic → K
+        self.proj_k_id = nn.Linear(id_dim, d_model)       # history ID → K (id mode)
 
         # ── Raw low-dim encodings (keep small, don't blow up to d_model yet) ──
         self.raw_resp = nn.Embedding(2, 4)               # binary 0/1 → 4-dim
@@ -120,6 +121,10 @@ class DySemKT(nn.Module):
         return self.proj_q(torch.cat([self.semantic(raw), self.item_id(item)], dim=-1))
 
     def _history_keys(self, history_items: torch.Tensor) -> torch.Tensor:
+        # id mode: pure ID embedding for K (no semantic leakage)
+        if self.feature_mode == "id":
+            return self.proj_k_id(self.item_id(history_items))
+        # semantic / hybrid: semantic K via deep projection
         return self.proj_k(self.semantic(self.question_features[history_items]))
 
     @staticmethod
@@ -247,6 +252,7 @@ class DySemKT(nn.Module):
             f" → LN → ReLU → Linear({self.semantic[3].in_features}→{self.semantic[3].out_features})",
             f"  proj_q       : Linear({self.proj_q.in_features}→{self.proj_q.out_features})",
             f"  proj_k       : Linear({self.proj_k.in_features}→{self.proj_k.out_features})",
+            f"  proj_k_id    : Linear({self.proj_k_id.in_features}→{self.proj_k_id.out_features})  # id mode",
             "",
             "  ── Raw Low-Dim Encodings ───────────────────────",
             f"  raw_resp     : Embedding(2, {self.raw_resp.embedding_dim})    # 0/1 → 4-dim",
@@ -286,9 +292,12 @@ class DySemKT(nn.Module):
         gates = self.tower_gate(gate_in)
         fused = gates[:, 0:1] * student_out + gates[:, 1:2] * question_out
 
-        # Residual from raw semantic
-        residual = self.residual_proj(self.question_features[batch["item"]])
-        output = fused + residual
+        # Residual from raw semantic (skip in id mode — no semantic available)
+        if self.feature_mode == "id":
+            output = fused
+        else:
+            residual = self.residual_proj(self.question_features[batch["item"]])
+            output = fused + residual
 
         # FM second-order interaction: [output, current_Q, output * current_Q]
         Q_sq = Q.squeeze(1)  # (B, d)

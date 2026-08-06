@@ -207,11 +207,7 @@ uv run --frozen dysemkt train     --data-dir data/processed/moocradar_api     --
 
 ```console
 # DyGKT 冷启动
-uv run --frozen dysemkt train --model dygkt \
-    --data-dir data/processed/moocradar_api \
-    --output-dir outputs/dygkt_cold \
-    --split cold \
-    --batch-size 1024
+uv run --frozen dysemkt train --model dygkt --data-dir data/processed/moocradar_api --output-dir outputs/dygkt_cold --split cold --batch-size 1024 --num-neighbors 40
 
 # DyGKT 时序划分
 uv run --frozen dysemkt train --model dygkt \

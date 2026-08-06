@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     fit.add_argument("--split", choices=["temporal", "cold"], default="cold",
                      help="data split (default: cold)")
     fit.add_argument("--feature-mode", choices=["semantic", "id", "hybrid"])
+    fit.add_argument("--retrieval", choices=["hybrid", "recent"], default="hybrid",
+                     help="history retrieval strategy (default: hybrid)")
     fit.add_argument("--d-model", type=int)
     fit.add_argument("--history-length", type=int)
     fit.add_argument("--dropout", type=float)

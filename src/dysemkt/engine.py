@@ -30,6 +30,7 @@ class TrainConfig:
     feature_mode: str = "hybrid"
     d_model: int = 128
     history_length: int = 40
+    retrieval: str = "hybrid"
     dropout: float = 0.1
     batch_size: int = 1024
     learning_rate: float = 3e-4
@@ -86,16 +87,17 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
     allowed_history = train_mask.copy()
 
     # ── Load or build history cache ──
-    cache_path = data_dir / "history_cache.npy"
+    cache_name = "history_cache.npy" if config.retrieval == "hybrid" else "history_cache_recent.npy"
+    cache_path = data_dir / cache_name
     if cache_path.exists():
         history_cache = np.load(cache_path)
         print(f"history cache loaded: {cache_path}  shape={history_cache.shape}  "
-              f"dtype={history_cache.dtype}  ⚡ fast path", flush=True)
+              f"dtype={history_cache.dtype}  retrieval={config.retrieval}  ⚡ fast path", flush=True)
     else:
-        print(f"history cache not found — building now (one-time cost)...", flush=True)
+        print(f"history cache not found — building now (retrieval={config.retrieval})...", flush=True)
         history_cache = build_history_cache(
             data, allowed_history, history_length=config.history_length,
-            cache_path=cache_path,
+            cache_path=cache_path, retrieval=config.retrieval,
         )
         print(f"history cache built and saved: {cache_path}  shape={history_cache.shape}", flush=True)
 
@@ -107,6 +109,7 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
         name: TemporalHistoryDataset(
             data, np.flatnonzero(split == code), config.history_length, allowed_history,
             global_stats=global_stats, history_cache=history_cache,
+            retrieval=config.retrieval,
         )
         for name, code in (("train", 0), ("validation", 1), ("test", 2))
     }
@@ -125,7 +128,7 @@ def train(data_dir: Path, output_dir: Path, config: TrainConfig) -> dict:
         f"train config: device={device} split={config.split} feature_mode={config.feature_mode} "
         f"epochs={config.epochs} patience={config.patience} batch_size={config.batch_size} "
         f"learning_rate={config.learning_rate:g} d_model={config.d_model} "
-        f"history_length={config.history_length} "
+        f"history_length={config.history_length} retrieval={config.retrieval} "
         f"dropout={config.dropout:g} num_workers={config.num_workers}",
         flush=True,
     )
