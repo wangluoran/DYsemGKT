@@ -197,6 +197,7 @@ uv run --frozen dysemkt train     --data-dir data/processed/moocradar_api     --
 --seed SEED                   随机种子
 --d-model N                   模型隐藏维度（默认 128）
 --max-history N               每侧历史窗口大小（默认 40）
+--retrieval hybrid|recent     历史检索策略（默认 hybrid，recent=纯最近N条）
 --history-cache PATH          预计算 history cache 路径（可选，加速训练）
 ```
 
@@ -250,11 +251,22 @@ DyGKT 与 DySemKT 的核心区别：
 | DyGKT Cold | dygkt | cold | — | DyGKT 冷启动基线 |
 | DyGKT Temporal | dygkt | temporal | — | DyGKT 时序基线 |
 | ID Temporal | dysemkt | temporal | id | 纯 ID 基线（无语义泄漏） |
+| **ID Cold + Recent** | dysemkt | cold | id | **真正零语义基线**（纯ID+纯最近40条，无结构检索） |
 | Semantic Cold | dysemkt | cold | semantic | 未见题目迁移能力 |
 | Hybrid Cold | dysemkt | cold | hybrid | 语义+ID 互补验证 |
 | Semantic Temporal | dysemkt | temporal | semantic | 时序下语义贡献验证 |
 
 正式报告应运行多个随机种子（`--seed 42 123 456`），在相同数据划分和参数下比较。
+
+纯 ID + 纯最近检索（真正零语义基线）：
+```console
+uv run --frozen dysemkt train \
+    --data-dir data/processed/moocradar_api \
+    --output-dir outputs/id_cold_recent \
+    --split cold \
+    --feature-mode id \
+    --retrieval recent
+```
 
 ## 补充说明
 
