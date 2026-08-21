@@ -1,18 +1,26 @@
-# DySemKT — 语义增强的动态图知识追踪
+# DySemKT — 面向题目冷启动的语义动态图知识追踪
 
-DySemKT 是一个用于知识追踪研究的紧凑项目，旨在探索如何通过题目实现两阶段的 DyGKT。该项目继承 DyGKT 的学生-题目-时间动态图思想，同时引入语义理解、防泄漏数据处理流程和双塔动态历史模型。
+DySemKT 是一个面向知识追踪任务的研究项目，核心目标是让模型直接理解“题目本身”，而不是只依赖预定义知识点或题目 ID 记忆历史表现。项目把题干、选项、概念标签和学生作答序列统一到动态历史建模框架中，重点解决未见题目冷启动、语义迁移和时间顺序防泄漏评估问题。
 
-项目当前版本支持 MOOCRadar 真实数据集。你可以完成端到端的题目语义学习，而不仅是预定义知识点的概率预测——模型学习题目本身的语义，而非依赖预定义知识点来泛化到未见题目。
+项目当前版本支持 MOOCRadar 真实数据集，可以完成从原始交互清洗、题目文本编码、冷启动划分、模型训练到评估报告的完整实验流程。DyGKT 在本仓库中作为可复现实验基线存在，用来衡量 DySemKT 在语义表达、历史检索、双塔建模和冷启动泛化上的增量贡献。
 
-## 项目亮点
+## 核心创新
+
+- **题目语义驱动的知识追踪**：将题干、选项和概念文本编码为题目语义向量，使模型能够在未见题目上依靠语义相似性和学生历史进行预测，而不是只能记忆训练集中出现过的题目 ID。
+- **严格冷启动评估协议**：提供按题目划分的 cold split，验证集和测试集题目在训练阶段未出现，历史标签也限制为训练集可见事件，避免把未来作答或测试题统计泄漏到模型中。
+- **双塔非对称动态建模**：学生塔学习长期知识状态，题目塔学习当前题目的重复作答、全局难度和时间衰减，两者通过自适应门控融合，而不是用同一种序列编码器处理所有关系。
+- **关系感知注意力偏置**：同题、同练习、概念重叠三类结构关系不只是拼接进特征，而是直接进入 attention logits，显式控制历史事件对当前预测的影响。
+- **混合历史检索器**：每次预测同时保留最近历史和结构相关历史，兼顾学生状态的近因变化与题目语义/结构相关性，避免纯最近窗口漏掉关键相似题。
+- **语义残差通路**：原始题目语义向量通过残差投影直达预测层，保证题目文本信息不会在历史注意力或门控融合中被完全稀释。
+- **可控消融实验设计**：内置 `semantic`、`id`、`hybrid` 三种题目表示模式，以及 `hybrid` / `recent` 两种检索策略，便于量化语义、ID 记忆和结构检索各自的贡献。
+
+## 项目能力
 
 - 读取、校验并按时序排列 MOOCRadar JSON 数据；
 - 清理嘈杂文本并构建每道题的标准化答案文本；
 - 支持离线哈希文本编码、SentenceTransformer 语义编码，以及 OpenAI 兼容 embeddings API；
 - 提供全局时序划分和严格未见题目（cold）两种划分；
 - 实现 DySemKT：双塔关系感知注意力（学生侧 + 题目侧）+ 全局特征 + 语义残差；
-- 结构化注意力偏置权重：同题/同练习/概念重叠三个维度直接修改 attention logits；
-- 提供 `semantic`、`id`、`hybrid` 三种题目表示模式，方便对比实验；
 - 完整的训练/验证/测试/早停/指标报告流程；
 - 覆盖数据处理/历史边界/模型前向传播/端到端训练的全套测试。
 
@@ -149,19 +157,19 @@ data/raw/moocradar/
 默认使用 BGE-M3（SentenceTransformer），首次运行会自动下载模型：
 
 ```console
-uv run --frozen dysemkt preprocess --data-dir data/raw/moocradar --out data/processed/moocradar_api
+uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_api --encoder sentence-transformer
 ```
 
 如需使用哈希替代语义编码（仅用于验证数据管线）：
 
 ```console
-uv run --frozen dysemkt preprocess --data-dir data/raw/moocradar --out data/processed/moocradar_api_hash --encoder hash
+uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_api_hash --encoder hash
 ```
 
 如需使用外部 embedding API（OpenAI 兼容格式）：
 
 ```console
-uv run --frozen dysemkt preprocess --data-dir data/raw/moocradar --out data/processed/moocradar_api_openai --encoder openai:your-model-name
+uv run --frozen dysemkt preprocess --raw-dir data/raw/moocradar --output-dir data/processed/moocradar_api_openai --encoder api
 ```
 
 ### 模型训练
@@ -187,23 +195,22 @@ uv run --frozen dysemkt train     --data-dir data/processed/moocradar_api     --
 ### 常用命令行参数
 
 ```
---encoder / --no-encoder      是否使用/跳过语义编码
+--encoder hash|sentence-transformer|api  预处理阶段的题目文本编码器
 --split cold|temporal         数据划分方式
 --feature-mode semantic|id|hybrid   题目特征模式
 --batch-size N                训练批次大小（默认 256）
 --epochs N                    最大训练轮数
 --patience N                  早停耐心值
---lr LR                       学习率
+--learning-rate LR            学习率
 --seed SEED                   随机种子
 --d-model N                   模型隐藏维度（默认 128）
---max-history N               每侧历史窗口大小（默认 40）
+--history-length N            每侧历史窗口大小（默认 40）
 --retrieval hybrid|recent     历史检索策略（默认 hybrid，recent=纯最近N条）
---history-cache PATH          预计算 history cache 路径（可选，加速训练）
 ```
 
-## DyGKT 基线
+## 对比基线
 
-项目完整保留了 DyGKT 模型（`src/dysemkt/dygkt_model.py`），可在相同数据管线中直接对比：
+项目保留 DyGKT 模型（`src/dysemkt/dygkt_model.py`）作为对比基线。这样可以在同一份 MOOCRadar 预处理数据、同一套 cold/temporal 划分和相同评估指标下，直接观察 DySemKT 的创新模块是否带来增益：
 
 ```console
 # DyGKT 冷启动
@@ -217,15 +224,17 @@ uv run --frozen dysemkt train --model dygkt \
     --batch-size 1024
 ```
 
-DyGKT 与 DySemKT 的核心区别：
+DyGKT 与 DySemKT 的方法差异：
 
 | 维度 | DyGKT | DySemKT |
 |------|-------|---------|
-| 序列编码 | GRU | 单层关系感知 Attention |
-| 多模态融合 | add 混合 | 4模态独立 K/V + 门控融合 |
-| 结构特征 | 普通加性特征 | 劫持 attention logits（标量偏置） |
-| 语义残差 | 无 | BGE 1024→128 直达预测层 |
-| 题目塔 | GRU 对称 | 非对称：自历史 + 全局统计 + Q-K对齐 |
+| 序列编码 | GRU | 关系感知 Attention |
+| 历史选择 | 近邻序列 | 最近历史 + 结构相关历史混合检索 |
+| 多模态融合 | 加性混合 | 语义/对错/时间/结构四模态独立建模后门控融合 |
+| 结构特征 | 普通输入特征 | 结构关系直接修正 attention logits |
+| 题目语义 | 不作为主通路 | 题目文本语义作为当前题表示和残差通路 |
+| 题目塔 | 对称序列建模 | 自历史 + 全局统计 + Q-K 对齐的非对称题目塔 |
+| 冷启动处理 | 依赖历史邻居 | cold split、全局统计 dropout、空题目嵌入和语义迁移 |
 
 ## 默认训练参数
 
